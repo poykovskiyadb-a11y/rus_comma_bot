@@ -1,15 +1,21 @@
-# bot.py - главный файл Telegram-бота для тренировки запятой перед "и"
+# bot.py - главный файл Telegram-бота для тренировки запятой перед "и" с самопинингом
 import asyncio
 import json
 import random
 import logging
 import os
+import sys
+import time
+import threading
+import requests
+import atexit
+import signal
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties  # НОВОЕ ИМПОРТ
+from aiogram.client.default import DefaultBotProperties
 
 # Импортируем наши данные
 from rules import RULE_TEXT
@@ -21,6 +27,250 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# --- КЛАСС ДЛЯ САМОПИНГА И ВЕБ-СЕРВЕРА ---
+class HealthMonitor:
+    """Класс для поддержания активности бота и веб-сервера"""
+    
+    def __init__(self):
+        self.active = True
+        self.ping_count = 0
+        self.last_ping = None
+        self.last_success = None
+        self.errors = 0
+        self.max_errors = 5
+        self.ping_urls = [
+            "https://rus-comma-bot.onrender.com",
+            "http://rus-comma-bot.onrender.com",
+            "https://rus-comma-bot.onrender.com/ping"
+        ]
+        
+    def ping_self(self):
+        """Пингует сервер бота"""
+        try:
+            for url in self.ping_urls:
+                try:
+                    start_time = time.time()
+                    response = requests.get(url, timeout=10)
+                    end_time = time.time()
+                    
+                    if response.status_code == 200:
+                        self.ping_count += 1
+                        self.last_ping = datetime.now()
+                        self.last_success = datetime.now()
+                        self.errors = 0  # Сбрасываем счетчик ошибок
+                        
+                        logger.info(f"✅ Self-ping #{self.ping_count} успешен: {url} "
+                                   f"({(end_time - start_time)*1000:.0f}ms)")
+                        return True
+                except requests.exceptions.RequestException:
+                    continue
+            
+            self.errors += 1
+            logger.warning(f"❌ Self-ping #{self.ping_count + 1} не удался. Ошибок подряд: {self.errors}")
+            
+            if self.errors >= self.max_errors:
+                logger.error(f"🚨 Достигнут максимум ошибок ({self.max_errors}). Требуется проверка.")
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при self-ping: {e}")
+            self.errors += 1
+            return False
+    
+    def keep_alive_loop(self):
+        """Бесконечный цикл для поддержания активности"""
+        logger.info("🔄 Запуск цикла keep-alive...")
+        
+        # Ждем 30 секунд перед первым пингом (даем серверу запуститься)
+        time.sleep(30)
+        
+        while self.active:
+            try:
+                # Пингуем каждые 8 минут (480 секунд)
+                # Это гарантирует, что Render не уснет (15 минут бездействия)
+                self.ping_self()
+                
+                # Засыпаем до следующего пинга
+                time.sleep(480)
+                
+            except KeyboardInterrupt:
+                logger.info("🛑 Keep-alive остановлен пользователем")
+                break
+            except Exception as e:
+                logger.error(f"⚠️ Ошибка в keep-alive цикле: {e}")
+                time.sleep(60)  # Ждем минуту при ошибке
+    
+    def get_status(self):
+        """Возвращает статус монитора"""
+        return {
+            "active": self.active,
+            "ping_count": self.ping_count,
+            "last_ping": self.last_ping.isoformat() if self.last_ping else None,
+            "last_success": self.last_success.isoformat() if self.last_success else None,
+            "errors": self.errors,
+            "max_errors": self.max_errors
+        }
+    
+    def stop(self):
+        """Останавливает монитор"""
+        self.active = False
+        logger.info("🛑 HealthMonitor остановлен")
+
+# Создаем глобальный экземпляр монитора
+health_monitor = HealthMonitor()
+
+# --- ПРОСТОЙ ВЕБ-СЕРВЕР ---
+def run_web_server():
+    """Запускает простой веб-сервер для Render.com"""
+    from flask import Flask
+    
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        status = health_monitor.get_status()
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>🤖 Бот для тренировки запятых перед "и"</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+                .status {{ padding: 10px; border-radius: 5px; margin: 10px 0; }}
+                .healthy {{ background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }}
+                .warning {{ background-color: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }}
+                .error {{ background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }}
+                .card {{ background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 15px; margin: 10px 0; }}
+                .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }}
+            </style>
+        </head>
+        <body>
+            <h1>🤖 Бот для тренировки запятых перед "и"</h1>
+            
+            <div class="status {'healthy' if status['errors'] == 0 else 'warning' if status['errors'] < 3 else 'error'}">
+                <h2>Статус: {'✅ Активен' if status['errors'] == 0 else '⚠️ Есть проблемы' if status['errors'] < 3 else '❌ Критический'}</h2>
+                <p>Последний успешный пинг: {status['last_success'] or 'Никогда'}</p>
+            </div>
+            
+            <div class="card">
+                <h3>📊 Статистика мониторинга</h3>
+                <div class="stats">
+                    <div>Всего пингов: <strong>{status['ping_count']}</strong></div>
+                    <div>Ошибок подряд: <strong>{status['errors']}</strong></div>
+                    <div>Макс. ошибок: <strong>{status['max_errors']}</strong></div>
+                    <div>Статус: <strong>{'🟢 Активен' if health_monitor.active else '🔴 Остановлен'}</strong></div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>🔗 Ссылки</h3>
+                <ul>
+                    <li><a href="/ping">Проверить связь (/ping)</a></li>
+                    <li><a href="/health">Детальный статус (/health)</a></li>
+                    <li><a href="/manual-ping">Ручной пинг (/manual-ping)</a></li>
+                    <li><a href="/bot-status">Статус бота (/bot-status)</a></li>
+                </ul>
+            </div>
+            
+            <div class="card">
+                <h3>ℹ️ Информация</h3>
+                <p>Этот бот автоматически пингует себя каждые 8 минут, чтобы Render.com не останавливал его через 15 минут неактивности.</p>
+                <p>Для проверки запятых пишите боту в Telegram: <a href="https://t.me/rus_comma_bot">@rus_comma_bot</a></p>
+            </div>
+            
+            <footer style="margin-top: 30px; text-align: center; color: #6c757d;">
+                <p>🔄 Последнее обновление: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </footer>
+        </body>
+        </html>
+        """
+    
+    @app.route('/ping')
+    def ping():
+        """Простой эндпоинт для проверки связи"""
+        health_monitor.ping_self()
+        return 'pong', 200
+    
+    @app.route('/health')
+    def health():
+        """Детальный статус здоровья"""
+        import psutil
+        import json as json_module
+        
+        status = health_monitor.get_status()
+        bot_status = {
+            "status": "healthy" if status['errors'] == 0 else "degraded" if status['errors'] < 3 else "unhealthy",
+            "timestamp": datetime.now().isoformat(),
+            "monitor": status,
+            "system": {
+                "memory_usage_mb": psutil.Process().memory_info().rss / 1024 / 1024,
+                "cpu_percent": psutil.cpu_percent(),
+                "uptime_seconds": time.time() - psutil.boot_time(),
+            },
+            "bot": {
+                "users_count": len(user_data),
+                "examples_count": len(EXAMPLES),
+                "total_tests": sum(u.get('total_tests', 0) for u in user_data.values()),
+            }
+        }
+        
+        return json_module.dumps(bot_status, indent=2, ensure_ascii=False), 200, {'Content-Type': 'application/json'}
+    
+    @app.route('/manual-ping')
+    def manual_ping():
+        """Ручной пинг с деталями"""
+        success = health_monitor.ping_self()
+        status = health_monitor.get_status()
+        
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family: Arial;">
+            <h1>{"✅ Пинг успешен" if success else "❌ Пинг не удался"}</h1>
+            <pre>{json.dumps(status, indent=2, ensure_ascii=False)}</pre>
+            <p><a href="/">На главную</a></p>
+        </body>
+        </html>
+        """
+    
+    @app.route('/bot-status')
+    def bot_status():
+        """Статус бота с пользовательской статистикой"""
+        total_users = len(user_data)
+        active_users = sum(1 for u in user_data.values() 
+                          if datetime.fromisoformat(u['last_active']).timestamp() > time.time() - 86400)
+        total_tests = sum(u.get('total_tests', 0) for u in user_data.values())
+        
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family: Arial;">
+            <h1>📊 Статистика бота</h1>
+            <div class="stats">
+                <p><strong>Всего пользователей:</strong> {total_users}</p>
+                <p><strong>Активных пользователей (24ч):</strong> {active_users}</p>
+                <p><strong>Всего пройденных тестов:</strong> {total_tests}</p>
+                <p><strong>Примеров в базе:</strong> {len(EXAMPLES)}</p>
+            </div>
+            <p><a href="/">На главную</a></p>
+        </body>
+        </html>
+        """
+    
+    # Запускаем Flask
+    port = int(os.environ.get('PORT', 5000))
+    logger.info(f"🌐 Запуск веб-сервера на порту {port}")
+    
+    # Используем waitress для продакшена, а не дебаг сервер Flask
+    if os.getenv('RENDER'):
+        from waitress import serve
+        serve(app, host='0.0.0.0', port=port)
+    else:
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # --- НАСТРОЙКА БОТА ---
 from config import API_TOKEN
@@ -70,7 +320,7 @@ def get_test_keyboard():
     builder.adjust(2, 1)
     return builder.as_markup(resize_keyboard=True)
 
-# --- ОБРАБОТЧИКИ ---
+# --- ОБРАБОТЧИКИ БОТА ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     """Обрабатывает команду /start"""
@@ -203,7 +453,7 @@ async def start_test(message: types.Message):
 
 `{example_text}`
 
-❓ *Вопрос:* Нужна ли запятая перед союзом *«и»* в этом предложении?
+❓ *Вопрос:* Нужна ли запятой перед союзом *«и»* в этом предложении?
 """
     await message.answer(question_text, reply_markup=get_test_keyboard())
 
@@ -283,6 +533,34 @@ async def back_to_menu(message: types.Message):
     
     await message.answer("Возвращаемся в главное меню...", reply_markup=get_main_keyboard())
 
+@dp.message(Command("ping"))
+async def bot_ping(message: types.Message):
+    """Проверка связи с ботом"""
+    await message.answer("🏓 Понг! Бот работает исправно.")
+
+@dp.message(Command("status"))
+async def bot_status(message: types.Message):
+    """Показать статус бота"""
+    status = health_monitor.get_status()
+    status_text = f"""
+📊 *Статус системы*
+
+🔄 Self-ping:
+• Всего пингов: {status['ping_count']}
+• Последний: {status['last_ping'] or 'Никогда'}
+• Ошибок подряд: {status['errors']}/{status['max_errors']}
+
+🤖 Бот:
+• Пользователей: {len(user_data)}
+• Примеров: {len(EXAMPLES)}
+• Тестов: {sum(u.get('total_tests', 0) for u in user_data.values())}
+
+🕐 Время: {datetime.now().strftime('%H:%M:%S')}
+
+Статус: {'✅ Нормальный' if status['errors'] == 0 else '⚠️ Предупреждение' if status['errors'] < 3 else '❌ Проблемы'}
+"""
+    await message.answer(status_text)
+
 @dp.message()
 async def unknown_message(message: types.Message):
     await message.answer("Я не понимаю эту команду. Используйте меню ниже:", reply_markup=get_main_keyboard())
@@ -295,38 +573,57 @@ async def auto_save():
         save_user_data(user_data)
         logger.info("Данные пользователей автосохранены")
 
-# --- ЗАПУСК БОТА ---
-# Добавьте в конец функции main():
+# --- ОБРАБОТЧИКИ ЗАВЕРШЕНИЯ ---
+def cleanup():
+    """Очистка перед завершением работы"""
+    logger.info("🧹 Выполняется очистка перед завершением...")
+    health_monitor.stop()
+    save_user_data(user_data)
+    logger.info("✅ Очистка завершена")
+
+# Регистрируем обработчики завершения
+atexit.register(cleanup)
+signal.signal(signal.SIGTERM, lambda s, f: (cleanup(), sys.exit(0)))
+signal.signal(signal.SIGINT, lambda s, f: (cleanup(), sys.exit(0)))
+
+# --- ЗАПУСК ВСЕГО ---
 async def main():
-    print("=" * 50)
-    print("БОТ ДЛЯ ТРЕНИРОВКИ ЗАПЯТОЙ ПЕРЕД 'И'")
-    print("=" * 50)
-    print(f"Загружено примеров: {len(EXAMPLES)}")
-    print(f"Зарегистрировано пользователей: {len(user_data)}")
-    print("Бот запускается...")
-    print(f"Среда: {'Production' if os.getenv('RENDER') else 'Development'}")
+    print("=" * 60)
+    print("🤖 БОТ ДЛЯ ТРЕНИРОВКИ ЗАПЯТОЙ ПЕРЕД 'И'")
+    print("=" * 60)
+    print(f"📝 Примеров: {len(EXAMPLES)}")
+    print(f"👥 Пользователей: {len(user_data)}")
+    print(f"🌐 Среда: {'RENDER.com' if os.getenv('RENDER') else 'Локальная'}")
+    print("🚀 Запуск...")
+    print("=" * 60)
     
-    # Запускаем автосохранение в фоне
+    # Запускаем веб-сервер в отдельном потоке
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    logger.info("Веб-сервер запущен в отдельном потоке")
+    
+    # Запускаем keep-alive в отдельном потоке
+    keep_alive_thread = threading.Thread(target=health_monitor.keep_alive_loop, daemon=True)
+    keep_alive_thread.start()
+    logger.info("Keep-alive монитор запущен")
+    
+    # Запускаем автосохранение
     asyncio.create_task(auto_save())
     
-    # Запускаем бота с обработкой graceful shutdown
+    # Запускаем бота
     try:
         await dp.start_polling(bot)
     finally:
-        # Сохраняем данные при завершении
-        save_user_data(user_data)
-        print("Данные сохранены перед завершением")
-        await bot.session.close()
+        cleanup()
 
-# И обновите блок try-except в конце:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n⚠️  Бот остановлен пользователем")
+        print("\n🛑 Бот остановлен пользователем")
     except Exception as e:
-        print(f"\n❌ Произошла ошибка: {e}")
+        print(f"\n❌ Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        print("✅ Бот завершил работу")
+        print("✅ Работа завершена")
