@@ -442,8 +442,8 @@ def main():
     logger.info("✅ Self-pinger запущен")
     
     # 2. Запускаем Telegram бота в основном потоке (НЕ в отдельном!)
-logger.info("✅ Запуск Telegram бота в основном потоке...")
-run_telegram_bot()  # <-- ВЫЗОВ НЕПОСРЕДСТВЕННО, БЕЗ threading.Thread
+    logger.info("✅ Запуск Telegram бота в основном потоке...")
+    run_telegram_bot()  # <-- ВЫЗОВ НЕПОСРЕДСТВЕННО, БЕЗ threading.Thread
     
     # 3. Запускаем веб-сервер в ОСНОВНОМ потоке
     logger.info("✅ Запуск веб-сервера...")
@@ -451,3 +451,4 @@ run_telegram_bot()  # <-- ВЫЗОВ НЕПОСРЕДСТВЕННО, БЕЗ thre
 
 if __name__ == "__main__":
     main()
+
