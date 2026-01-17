@@ -1,0 +1,23 @@
+services:
+  - type: worker
+    name: telegram-comma-bot
+    env: python
+    plan: free
+    region: frankfurt  # или singapore, oregon - ближе к вам
+    branch: main
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+        generateValue: true  # Сгенерирует случайное, но вам нужно вставить реальный
+      - key: PYTHON_VERSION
+        value: 3.10.11
+      - key: ENVIRONMENT
+        value: production
+      - key: TZ
+        value: Europe/Moscow  # Ваша временная зона
+    autoDeploy: true
+    healthCheckPath: /health  # Если добавите health endpoint
