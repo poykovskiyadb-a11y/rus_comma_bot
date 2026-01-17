@@ -6,8 +6,32 @@ import logging
 import threading
 import time
 import requests
+import sys        
+import socket
 from datetime import datetime
 from flask import Flask, jsonify
+
+# ===== НОВЫЙ КОД: ПРОВЕРКА УНИКАЛЬНОСТИ ПОРТА =====
+def is_port_in_use(port):
+    """Проверяет, занят ли порт другим процессом"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
+# Ждем, если порт занят (это может быть предыдущий инстанс)
+if os.getenv('RENDER'):
+    port = int(os.environ.get('PORT', 10000))
+    max_wait = 30  # максимум 30 секунд ожидания
+    wait_time = 0
+    
+    while is_port_in_use(port) and wait_time < max_wait:
+        print(f"⚠️  Порт {port} занят, ждем... ({wait_time}/{max_wait} сек)")
+        time.sleep(2)
+        wait_time += 2
+    
+    if wait_time >= max_wait:
+        print("❌ Не удалось дождаться освобождения порта. Выход.")
+        sys.exit(1)
+# ===== КОНЕЦ НОВОГО КОДА =====
 
 # Настройка логирования
 logging.basicConfig(
