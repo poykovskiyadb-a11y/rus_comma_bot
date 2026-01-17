@@ -1,0 +1,51 @@
+# Секретные файлы - НИКОГДА не загружать в GitHub!
+.env
+.env.local
+.env.development
+.env.production
+*.env
+
+# Файлы с данными (можно хранить локально, но не обязательно в GitHub)
+user_data.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Питон
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Логи
+*.log
+logs/
+
+# Временные файлы
+temp/
+tmp/
