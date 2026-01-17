@@ -441,10 +441,9 @@ def main():
     pinger.start()
     logger.info("✅ Self-pinger запущен")
     
-    # 2. Запускаем Telegram бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
-    bot_thread.start()
-    logger.info("✅ Telegram бот запущен в фоне")
+    # 2. Запускаем Telegram бота в основном потоке (НЕ в отдельном!)
+logger.info("✅ Запуск Telegram бота в основном потоке...")
+run_telegram_bot()  # <-- ВЫЗОВ НЕПОСРЕДСТВЕННО, БЕЗ threading.Thread
     
     # 3. Запускаем веб-сервер в ОСНОВНОМ потоке
     logger.info("✅ Запуск веб-сервера...")
