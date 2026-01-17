@@ -416,7 +416,7 @@ def run_telegram_bot():
             asyncio.create_task(auto_save())
             
             # Запускаем бота
-            await dp.start_polling(bot)
+            await dp.start_polling(bot, handle_signals=False, skip_updates=True)
         
         # Запускаем asyncio в отдельном потоке
         asyncio.run(main_bot())
