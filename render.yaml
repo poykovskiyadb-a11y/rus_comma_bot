@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: telegram-comma-bot
     env: python
     plan: free
@@ -16,4 +16,5 @@ services:
         value: production
       - key: TZ
         value: Europe/Moscow
+    healthCheckPath: /ping
     autoDeploy: true
