@@ -163,18 +163,6 @@ def run_telegram_bot():
         
         logger.info(f"Используется токен: {API_TOKEN[:10]}...")
         
-        # Проверяем токен перед запуском
-        try:
-            response = requests.get(f"https://api.telegram.org/bot{API_TOKEN}/getMe", timeout=10)
-            if response.status_code == 200:
-                logger.info("✅ Токен проверен, бот доступен")
-            else:
-                logger.error(f"❌ Токен недействителен: {response.status_code}")
-                return
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки токена: {e}")
-            return
-        
         from rules import RULE_TEXT
         
         # Инициализация бота
