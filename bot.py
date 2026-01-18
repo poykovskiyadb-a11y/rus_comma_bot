@@ -12,24 +12,6 @@ import asyncio
 from datetime import datetime
 from flask import Flask, jsonify
 
-# ==================== ИМПОРТ НАСТРОЕК ИЗ CONFIG ====================
-from config import (
-    API_TOKEN,
-    USER_DATA_FILE,
-    AUTO_SAVE_INTERVAL,
-    WEB_SERVER_PORT,
-    WEB_SERVER_HOST,
-    WEB_SERVER_THREADS,
-    SELF_PING_URL,
-    SELF_PING_INTERVAL,
-    MAX_RETRIES,
-    RETRY_DELAY,
-    POLLING_TIMEOUT,
-    REQUEST_TIMEOUT,
-    MAX_MESSAGE_LENGTH,
-    check_bot_status
-)
-
 # ===== ПРОВЕРКА ПОРТА =====
 def is_port_in_use(port):
     """Проверяет, занят ли порт другим процессом"""
@@ -55,18 +37,9 @@ if os.getenv('RENDER'):
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Временное отключение проверки для отладки
-try:
-    if not check_bot_status():
-        logger.warning("⚠️  Проверка токена не пройдена, но продолжаем запуск")
-        logger.warning("⚠️  Возможно, проблемы с сетью или Telegram API")
-except Exception as e:
-    logger.warning(f"⚠️  Ошибка при проверке токена: {e}, продолжаем запуск")
 
 # --- СОЗДАЕМ FLASK ПРИЛОЖЕНИЕ ---
 app = Flask(__name__)
@@ -78,6 +51,8 @@ try:
 except ImportError as e:
     logger.error(f"❌ Не удалось загрузить examples.py: {e}")
     EXAMPLES = []
+
+USER_DATA_FILE = 'user_data.json'
 
 def load_user_data():
     try:
@@ -137,8 +112,7 @@ def health():
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "users": len(user_data),
-            "examples": len(EXAMPLES),
-            "bot_status": "running"
+            "examples": len(EXAMPLES)
         }), 200
 
 # --- СИСТЕМА САМОПИНГА ---
@@ -149,7 +123,8 @@ class SelfPinger:
         
     def ping(self):
         try:
-            response = requests.get(f"{SELF_PING_URL}/ping", timeout=REQUEST_TIMEOUT)
+            url = f"https://{os.environ.get('RENDER_SERVICE_NAME', 'rus-comma-bot')}.onrender.com/ping"
+            response = requests.get(url, timeout=10)
             self.count += 1
             logger.info(f"✅ Self-ping #{self.count}: {response.status_code}")
             return True
@@ -162,7 +137,7 @@ class SelfPinger:
             time.sleep(30)
             while self.active:
                 self.ping()
-                time.sleep(SELF_PING_INTERVAL)
+                time.sleep(300)
         
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
@@ -178,7 +153,28 @@ def run_telegram_bot():
         from aiogram.utils.keyboard import ReplyKeyboardBuilder
         from aiogram.enums import ParseMode
         from aiogram.client.default import DefaultBotProperties
-        from config import API_TOKEN
+        
+        # Получаем токен из переменных окружения
+        API_TOKEN = os.environ.get('API_TOKEN', '8409938113:AAHjLQcO9WtqKqL8vYpM6vzq6Z5wXqoX6oE')
+        
+        if not API_TOKEN:
+            logger.error("❌ API_TOKEN не найден в переменных окружения")
+            return
+        
+        logger.info(f"Используется токен: {API_TOKEN[:10]}...")
+        
+        # Проверяем токен перед запуском
+        try:
+            response = requests.get(f"https://api.telegram.org/bot{API_TOKEN}/getMe", timeout=10)
+            if response.status_code == 200:
+                logger.info("✅ Токен проверен, бот доступен")
+            else:
+                logger.error(f"❌ Токен недействителен: {response.status_code}")
+                return
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки токена: {e}")
+            return
+        
         from rules import RULE_TEXT
         
         # Инициализация бота
@@ -341,10 +337,6 @@ def run_telegram_bot():
             
             example_text, correct_answer, explanation = EXAMPLES[example_index]
             
-            # Обрезаем сообщение если слишком длинное
-            if len(example_text) > MAX_MESSAGE_LENGTH - 100:
-                example_text = example_text[:MAX_MESSAGE_LENGTH - 100] + "..."
-            
             question_text = f"""
 *Пример {example_index + 1} из {len(EXAMPLES)}*
 
@@ -441,7 +433,7 @@ def run_telegram_bot():
         # Автосохранение
         async def auto_save():
             while True:
-                await asyncio.sleep(AUTO_SAVE_INTERVAL)
+                await asyncio.sleep(300)
                 with user_data_lock:
                     save_user_data(user_data)
                     logger.info("Данные пользователей автосохранены")
@@ -466,37 +458,28 @@ def run_telegram_bot():
 
 # --- ЗАПУСК ВЕБ-СЕРВЕРА ---
 def run_web_server():
-    logger.info(f"🚀 Запуск веб-сервера на порту {WEB_SERVER_PORT}")
+    port = int(os.environ.get('PORT', 5000))
+    logger.info(f"🚀 Запуск веб-сервера на порту {port}")
     
     # Используем waitress для продакшена
     try:
         from waitress import serve
-        serve(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT, threads=WEB_SERVER_THREADS)
+        serve(app, host='0.0.0.0', port=port, threads=4)
     except ImportError:
         logger.warning("Waitress не установлен, используем dev-сервер")
-        app.run(host=WEB_SERVER_HOST, port=WEB_SERVER_PORT, debug=False, use_reloader=False)
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main():
     print("=" * 60)
     print("🚀 ЗАПУСК СИСТЕМЫ")
     print("=" * 60)
-    
-    # Проверяем бота перед запуском
-    logger.info("🔍 Проверка доступности бота...")
-    if not check_bot_status():
-        logger.error("❌ Бот недоступен. Проверьте токен и интернет соединение")
-        sys.exit(1)
-    
     print(f"📝 Примеров в базе: {len(EXAMPLES)}")
     
     with user_data_lock:
         print(f"👥 Пользователей: {len(user_data)}")
     
     print(f"🌐 Среда: {'RENDER.com' if os.getenv('RENDER') else 'Локальная'}")
-    print(f"🌐 Веб-сервер: {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
-    print(f"🤖 Интервал автосохранения: {AUTO_SAVE_INTERVAL} сек")
-    print(f"🔄 Интервал самопинга: {SELF_PING_INTERVAL} сек")
     print("=" * 60)
     
     # 1. Запускаем самопинг
@@ -510,9 +493,8 @@ def main():
     logger.info("✅ Telegram бот запущен в отдельном потоке")
     
     # 3. Запускаем веб-сервер в основном потоке
-    logger.info("✅ Запуск веб-сервера в основном потоке...")
+    logger.info("✅ Запуск веб-сервера...")
     run_web_server()
 
 if __name__ == "__main__":
     main()
-
