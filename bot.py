@@ -12,6 +12,24 @@ import asyncio
 from datetime import datetime
 from flask import Flask, jsonify
 
+# ==================== ИМПОРТ НАСТРОЕК ИЗ CONFIG ====================
+from config import (
+    API_TOKEN,
+    USER_DATA_FILE,
+    AUTO_SAVE_INTERVAL,
+    WEB_SERVER_PORT,
+    WEB_SERVER_HOST,
+    WEB_SERVER_THREADS,
+    SELF_PING_URL,
+    SELF_PING_INTERVAL,
+    MAX_RETRIES,
+    RETRY_DELAY,
+    POLLING_TIMEOUT,
+    REQUEST_TIMEOUT,
+    MAX_MESSAGE_LENGTH,
+    check_bot_status
+)
+
 # ===== ПРОВЕРКА ПОРТА =====
 def is_port_in_use(port):
     """Проверяет, занят ли порт другим процессом"""
@@ -37,9 +55,15 @@ if os.getenv('RENDER'):
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# Проверяем бота перед запуском
+if not check_bot_status():
+    logger.error("❌ Бот недоступен. Проверьте токен и интернет соединение")
+    sys.exit(1)
 
 # --- СОЗДАЕМ FLASK ПРИЛОЖЕНИЕ ---
 app = Flask(__name__)
@@ -51,8 +75,6 @@ try:
 except ImportError as e:
     logger.error(f"❌ Не удалось загрузить examples.py: {e}")
     EXAMPLES = []
-
-USER_DATA_FILE = 'user_data.json'
 
 def load_user_data():
     try:
@@ -124,9 +146,7 @@ class SelfPinger:
         
     def ping(self):
         try:
-            service_name = os.environ.get('RENDER_SERVICE_NAME', 'rus-comma-bot')
-            url = f"https://{service_name}.onrender.com/ping"
-            response = requests.get(url, timeout=10)
+            response = requests.get(f"{SELF_PING_URL}/ping", timeout=REQUEST_TIMEOUT)
             self.count += 1
             logger.info(f"✅ Self-ping #{self.count}: {response.status_code}")
             return True
@@ -136,10 +156,12 @@ class SelfPinger:
     
     def start(self):
         def worker():
+            # Ждем 30 секунд перед первым пингом
             time.sleep(30)
             while self.active:
                 self.ping()
-                time.sleep(300)
+                # Используем интервал из конфига
+                time.sleep(SELF_PING_INTERVAL)
         
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
@@ -302,30 +324,33 @@ def run_telegram_bot():
                     await message.answer("❌ Ошибка: данные пользователя не найдены", reply_markup=get_main_keyboard())
         
         @dp.message(lambda message: message.text == "🚀 Начать тест")
-        async def start_test(message: types.Message):
-            user_id = str(message.from_user.id)
-            
-            with user_data_lock:
-                if user_id not in user_data:
-                    await cmd_start(message)
-                    return
-            
-            example_index = random.randint(0, len(EXAMPLES) - 1)
-            
-            with user_data_lock:
-                user_data[user_id]["current_example"] = example_index
-                save_user_data(user_data)
-            
-            example_text, correct_answer, explanation = EXAMPLES[example_index]
-            
-            question_text = f"""
+async def start_test(message: types.Message):
+    user_id = str(message.from_user.id)
+    
+    if user_id not in user_data:
+        await cmd_start(message)
+        return
+    
+    example_index = random.randint(0, len(EXAMPLES) - 1)
+    
+    with user_data_lock:
+        user_data[user_id]["current_example"] = example_index
+        save_user_data(user_data)
+    
+    example_text, correct_answer, explanation = EXAMPLES[example_index]
+    
+    # Обрезаем сообщение если слишком длинное
+    if len(example_text) > MAX_MESSAGE_LENGTH - 100:
+        example_text = example_text[:MAX_MESSAGE_LENGTH - 100] + "..."
+    
+    question_text = f"""
 *Пример {example_index + 1} из {len(EXAMPLES)}*
 
 `{example_text}`
 
 ❓ *Вопрос:* Нужна ли запятой перед союзом *«и»* в этом предложении?
 """
-            await message.answer(question_text, reply_markup=get_test_keyboard())
+    await message.answer(question_text, reply_markup=get_test_keyboard())
         
         @dp.message(lambda message: message.text in ["✅ Да, нужна", "❌ Нет, не нужна"])
         async def check_answer(message: types.Message):
@@ -414,11 +439,10 @@ def run_telegram_bot():
         # Автосохранение
         async def auto_save():
             while True:
-                await asyncio.sleep(300)
-                with user_data_lock:
-                    save_user_data(user_data)
-                    logger.info("Данные пользователей автосохранены")
-        
+            await asyncio.sleep(AUTO_SAVE_INTERVAL)
+            save_user_data(user_data)
+            logger.info("Данные пользователей автосохранены")
+       
         # Основная функция бота
         async def main_bot():
             logger.info("🤖 Запуск Telegram бота...")
@@ -439,28 +463,37 @@ def run_telegram_bot():
 
 # --- ЗАПУСК ВЕБ-СЕРВЕРА ---
 def run_web_server():
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Запуск веб-сервера на порту {port}")
+    logger.info(f"🚀 Запуск веб-сервера на порту {WEB_SERVER_PORT}")
     
     # Используем waitress для продакшена
     try:
         from waitress import serve
-        serve(app, host='0.0.0.0', port=port, threads=4)
+        serve(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT, threads=WEB_SERVER_THREADS)
     except ImportError:
         logger.warning("Waitress не установлен, используем dev-сервер")
-        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
+        app.run(host=WEB_SERVER_HOST, port=WEB_SERVER_PORT, debug=False, use_reloader=False)
+        
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main():
     print("=" * 60)
     print("🚀 ЗАПУСК СИСТЕМЫ")
     print("=" * 60)
+    
+    # Проверяем бота перед запуском
+    logger.info("🔍 Проверка доступности бота...")
+    if not check_bot_status():
+        logger.error("❌ Бот недоступен. Проверьте токен и интернет соединение")
+        sys.exit(1)
+    
     print(f"📝 Примеров в базе: {len(EXAMPLES)}")
     
     with user_data_lock:
         print(f"👥 Пользователей: {len(user_data)}")
     
     print(f"🌐 Среда: {'RENDER.com' if os.getenv('RENDER') else 'Локальная'}")
+    print(f"🌐 Веб-сервер: {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
+    print(f"🤖 Интервал автосохранения: {AUTO_SAVE_INTERVAL} сек")
+    print(f"🔄 Интервал самопинга: {SELF_PING_INTERVAL} сек")
     print("=" * 60)
     
     # 1. Запускаем самопинг
@@ -469,13 +502,13 @@ def main():
     logger.info("✅ Self-pinger запущен")
     
     # 2. Запускаем Telegram бота в отдельном потоке
-    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
-    bot_thread.start()
-    logger.info("✅ Telegram бот запущен в отдельном потоке")
+    telegram_bot = TelegramBot()
+    bot_thread = telegram_bot.run_in_thread()
     
     # 3. Запускаем веб-сервер в основном потоке
-    logger.info("✅ Запуск веб-сервера...")
+    logger.info("✅ Запуск веб-сервера в основном потоке...")
     run_web_server()
 
 if __name__ == "__main__":
     main()
+
