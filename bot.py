@@ -156,11 +156,9 @@ class SelfPinger:
     
     def start(self):
         def worker():
-            # Ждем 30 секунд перед первым пингом
             time.sleep(30)
             while self.active:
                 self.ping()
-                # Используем интервал из конфига
                 time.sleep(SELF_PING_INTERVAL)
         
         thread = threading.Thread(target=worker, daemon=True)
@@ -324,33 +322,34 @@ def run_telegram_bot():
                     await message.answer("❌ Ошибка: данные пользователя не найдены", reply_markup=get_main_keyboard())
         
         @dp.message(lambda message: message.text == "🚀 Начать тест")
-    async def start_test(message: types.Message):
-    user_id = str(message.from_user.id)
-    
-    if user_id not in user_data:
-        await cmd_start(message)
-        return
-    
-    example_index = random.randint(0, len(EXAMPLES) - 1)
-    
-    with user_data_lock:
-        user_data[user_id]["current_example"] = example_index
-        save_user_data(user_data)
-    
-    example_text, correct_answer, explanation = EXAMPLES[example_index]
-    
-    # Обрезаем сообщение если слишком длинное
-    if len(example_text) > MAX_MESSAGE_LENGTH - 100:
-        example_text = example_text[:MAX_MESSAGE_LENGTH - 100] + "..."
-    
-    question_text = f"""
+        async def start_test(message: types.Message):
+            user_id = str(message.from_user.id)
+            
+            with user_data_lock:
+                if user_id not in user_data:
+                    await cmd_start(message)
+                    return
+            
+            example_index = random.randint(0, len(EXAMPLES) - 1)
+            
+            with user_data_lock:
+                user_data[user_id]["current_example"] = example_index
+                save_user_data(user_data)
+            
+            example_text, correct_answer, explanation = EXAMPLES[example_index]
+            
+            # Обрезаем сообщение если слишком длинное
+            if len(example_text) > MAX_MESSAGE_LENGTH - 100:
+                example_text = example_text[:MAX_MESSAGE_LENGTH - 100] + "..."
+            
+            question_text = f"""
 *Пример {example_index + 1} из {len(EXAMPLES)}*
 
 `{example_text}`
 
 ❓ *Вопрос:* Нужна ли запятой перед союзом *«и»* в этом предложении?
 """
-    await message.answer(question_text, reply_markup=get_test_keyboard())
+            await message.answer(question_text, reply_markup=get_test_keyboard())
         
         @dp.message(lambda message: message.text in ["✅ Да, нужна", "❌ Нет, не нужна"])
         async def check_answer(message: types.Message):
@@ -439,10 +438,11 @@ def run_telegram_bot():
         # Автосохранение
         async def auto_save():
             while True:
-            await asyncio.sleep(AUTO_SAVE_INTERVAL)
-            save_user_data(user_data)
-            logger.info("Данные пользователей автосохранены")
-       
+                await asyncio.sleep(AUTO_SAVE_INTERVAL)
+                with user_data_lock:
+                    save_user_data(user_data)
+                    logger.info("Данные пользователей автосохранены")
+        
         # Основная функция бота
         async def main_bot():
             logger.info("🤖 Запуск Telegram бота...")
@@ -472,7 +472,7 @@ def run_web_server():
     except ImportError:
         logger.warning("Waitress не установлен, используем dev-сервер")
         app.run(host=WEB_SERVER_HOST, port=WEB_SERVER_PORT, debug=False, use_reloader=False)
-        
+
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main():
     print("=" * 60)
@@ -502,8 +502,9 @@ def main():
     logger.info("✅ Self-pinger запущен")
     
     # 2. Запускаем Telegram бота в отдельном потоке
-    telegram_bot = TelegramBot()
-    bot_thread = telegram_bot.run_in_thread()
+    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    bot_thread.start()
+    logger.info("✅ Telegram бот запущен в отдельном потоке")
     
     # 3. Запускаем веб-сервер в основном потоке
     logger.info("✅ Запуск веб-сервера в основном потоке...")
@@ -511,5 +512,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
