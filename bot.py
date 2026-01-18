@@ -112,7 +112,8 @@ def health():
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "users": len(user_data),
-            "examples": len(EXAMPLES)
+            "examples": len(EXAMPLES),
+            "bot_status": "running"
         }), 200
 
 # --- СИСТЕМА САМОПИНГА ---
@@ -123,7 +124,8 @@ class SelfPinger:
         
     def ping(self):
         try:
-            url = f"https://{os.environ.get('RENDER_SERVICE_NAME', 'rus-comma-bot')}.onrender.com/ping"
+            service_name = os.environ.get('RENDER_SERVICE_NAME', 'rus-comma-bot')
+            url = f"https://{service_name}.onrender.com/ping"
             response = requests.get(url, timeout=10)
             self.count += 1
             logger.info(f"✅ Self-ping #{self.count}: {response.status_code}")
@@ -153,16 +155,7 @@ def run_telegram_bot():
         from aiogram.utils.keyboard import ReplyKeyboardBuilder
         from aiogram.enums import ParseMode
         from aiogram.client.default import DefaultBotProperties
-        
-        # Получаем токен из переменных окружения
-        API_TOKEN = os.environ.get('API_TOKEN', '8409938113:AAHjLQcO9WtqKqL8vYpM6vzq6Z5wXqoX6oE')
-        
-        if not API_TOKEN:
-            logger.error("❌ API_TOKEN не найден в переменных окружения")
-            return
-        
-        logger.info(f"Используется токен: {API_TOKEN[:10]}...")
-        
+        from config import API_TOKEN
         from rules import RULE_TEXT
         
         # Инициализация бота
