@@ -324,7 +324,7 @@ def run_telegram_bot():
                     await message.answer("❌ Ошибка: данные пользователя не найдены", reply_markup=get_main_keyboard())
         
         @dp.message(lambda message: message.text == "🚀 Начать тест")
-async def start_test(message: types.Message):
+    async def start_test(message: types.Message):
     user_id = str(message.from_user.id)
     
     if user_id not in user_data:
@@ -511,4 +511,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
