@@ -9,20 +9,19 @@ import requests
 import sys
 import socket
 import asyncio
-import traceback
 from datetime import datetime
 from flask import Flask, jsonify
 
-# ===== НОВЫЙ КОД: ПРОВЕРКА УНИКАЛЬНОСТИ ПОРТА =====
+# ===== ПРОВЕРКА ПОРТА =====
 def is_port_in_use(port):
     """Проверяет, занят ли порт другим процессом"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
 
-# Ждем, если порт занят (это может быть предыдущий инстанс)
+# Ждем, если порт занят
 if os.getenv('RENDER'):
     port = int(os.environ.get('PORT', 10000))
-    max_wait = 30  # максимум 30 секунд ожидания
+    max_wait = 30
     wait_time = 0
     
     while is_port_in_use(port) and wait_time < max_wait:
@@ -33,7 +32,7 @@ if os.getenv('RENDER'):
     if wait_time >= max_wait:
         print("❌ Не удалось дождаться освобождения порта. Выход.")
         sys.exit(1)
-# ===== КОНЕЦ НОВОГО КОДА =====
+# ===== КОНЕЦ ПРОВЕРКИ ПОРТА =====
 
 # Настройка логирования
 logging.basicConfig(
@@ -42,10 +41,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- СОЗДАЕМ FLASK ПРИЛОЖЕНИЕ ПЕРВЫМ ---
+# --- СОЗДАЕМ FLASK ПРИЛОЖЕНИЕ ---
 app = Flask(__name__)
 
-# Загружаем данные сразу
+# Загружаем данные
 try:
     from examples import EXAMPLES
     logger.info(f"✅ Загружено {len(EXAMPLES)} примеров")
@@ -58,20 +57,13 @@ USER_DATA_FILE = 'user_data.json'
 def load_user_data():
     try:
         with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            logger.info(f"✅ Данные пользователей загружены: {len(data)} пользователей")
-            return data
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        logger.info("Файл user_data.json не найден, создаем новый")
         return {}
 
 def save_user_data(data):
-    try:
-        with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info(f"✅ Данные сохранены: {len(data)} пользователей")
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения данных: {e}")
+    with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 user_data = load_user_data()
 user_data_lock = threading.Lock()
@@ -91,7 +83,6 @@ def home():
         <style>
             body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
             .status {{ color: green; font-weight: bold; }}
-            .error {{ color: red; font-weight: bold; }}
         </style>
     </head>
     <body>
@@ -103,8 +94,8 @@ def home():
         <hr>
         <p>🔄 Бот автоматически поддерживает активность каждые 5 минут</p>
         <p>🌐 Веб-сервер запущен и слушает порт</p>
-        <p>🤖 Telegram бот: <span class="{'status' if bot_running else 'error'}">{'✅ Работает' if bot_running else '❌ Остановлен'}</span></p>
-        <p><a href="/ping">Проверить связь</a> | <a href="/health">Статус</a> | <a href="/restart_bot">Перезапустить бота</a></p>
+        <p>🤖 Telegram бот работает в фоновом режиме</p>
+        <p><a href="/ping">Проверить связь</a> | <a href="/health">Статус</a></p>
     </body>
     </html>
     """
@@ -122,46 +113,8 @@ def health():
             "timestamp": datetime.now().isoformat(),
             "users": len(user_data),
             "examples": len(EXAMPLES),
-            "bot_running": bot_running,
-            "bot_last_check": bot_last_check.isoformat() if bot_last_check else None
+            "bot_status": "running"
         }), 200
-
-@app.route('/restart_bot')
-def restart_bot():
-    logger.info("Ручной перезапуск бота запрошен через веб-интерфейс")
-    if telegram_bot and hasattr(telegram_bot, 'restart'):
-        telegram_bot.restart()
-        return "🔄 Бот перезапускается...", 200
-    return "❌ Не удалось перезапустить бота", 500
-
-# --- СИСТЕМА МОНИТОРИНГА БОТА ---
-bot_running = False
-bot_last_check = None
-bot_check_lock = threading.Lock()
-
-class BotMonitor:
-    def __init__(self, bot_instance):
-        self.bot = bot_instance
-        self.active = True
-        
-    def start(self):
-        def monitor():
-            global bot_running, bot_last_check
-            while self.active:
-                try:
-                    # Проверяем статус бота
-                    with bot_check_lock:
-                        bot_last_check = datetime.now()
-                        # Здесь можно добавить дополнительную проверку
-                    
-                    time.sleep(60)  # Проверяем каждую минуту
-                except Exception as e:
-                    logger.error(f"Ошибка в мониторе бота: {e}")
-        
-        thread = threading.Thread(target=monitor, daemon=True)
-        thread.start()
-        logger.info("✅ Монитор бота запущен")
-        return thread
 
 # --- СИСТЕМА САМОПИНГА ---
 class SelfPinger:
@@ -190,61 +143,48 @@ class SelfPinger:
         
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
-        logger.info("✅ Self-pinger запущен")
         return thread
 
 # --- ТЕЛЕГРАМ БОТ ---
-class TelegramBot:
-    def __init__(self):
-        self.bot = None
-        self.dp = None
-        self.active = True
-        self.session = None
-        self.polling_task = None
-        
-    def initialize(self):
-        try:
-            from aiogram import Bot, Dispatcher, types
-            from aiogram.filters import Command
-            from aiogram.utils.keyboard import ReplyKeyboardBuilder
-            from aiogram.enums import ParseMode
-            from aiogram.client.default import DefaultBotProperties
-            from aiogram.client.session.aiohttp import AiohttpSession
-            
-            from config import API_TOKEN
-            from rules import RULE_TEXT
-            
-            if not API_TOKEN:
-                logger.error("❌ API_TOKEN не найден в config.py")
-                return False
-                
-            # Используем сессию с таймаутами
-            self.session = AiohttpSession()
-            
-            self.bot = Bot(
-                token=API_TOKEN,
-                session=self.session,
-                default=DefaultBotProperties(
-                    parse_mode=ParseMode.MARKDOWN,
-                    link_preview_is_disabled=True
-                )
-            )
-            self.dp = Dispatcher()
-            
-            self._setup_handlers(RULE_TEXT)
-            logger.info("✅ Telegram бот инициализирован")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации бота: {e}")
-            logger.error(traceback.format_exc())
-            return False
-    
-    def _setup_handlers(self, RULE_TEXT):
-        from aiogram import types
+def run_telegram_bot():
+    """Запускает Telegram бота в отдельном потоке"""
+    try:
+        import asyncio
+        from aiogram import Bot, Dispatcher, types
         from aiogram.filters import Command
+        from aiogram.utils.keyboard import ReplyKeyboardBuilder
+        from aiogram.enums import ParseMode
+        from aiogram.client.default import DefaultBotProperties
+        from config import API_TOKEN
+        from rules import RULE_TEXT
         
-        @self.dp.message(Command("start"))
+        # Инициализация бота
+        bot = Bot(
+            token=API_TOKEN, 
+            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+        )
+        dp = Dispatcher()
+        
+        # Клавиатуры
+        def get_main_keyboard():
+            builder = ReplyKeyboardBuilder()
+            builder.add(types.KeyboardButton(text="📖 Правило"))
+            builder.add(types.KeyboardButton(text="🚀 Начать тест"))
+            builder.add(types.KeyboardButton(text="📊 Статистика"))
+            builder.add(types.KeyboardButton(text="💪 Работа над ошибками"))
+            builder.adjust(2, 2)
+            return builder.as_markup(resize_keyboard=True)
+        
+        def get_test_keyboard():
+            builder = ReplyKeyboardBuilder()
+            builder.add(types.KeyboardButton(text="✅ Да, нужна"))
+            builder.add(types.KeyboardButton(text="❌ Нет, не нужна"))
+            builder.add(types.KeyboardButton(text="🔙 В меню"))
+            builder.adjust(2, 1)
+            return builder.as_markup(resize_keyboard=True)
+        
+        # Обработчики
+        @dp.message(Command("start"))
         async def cmd_start(message: types.Message):
             user_id = str(message.from_user.id)
             user_name = message.from_user.first_name
@@ -279,105 +219,230 @@ class TelegramBot:
 
 Выбери действие в меню ниже:
 """
-            await message.answer(welcome_text, reply_markup=self._get_main_keyboard())
+            await message.answer(welcome_text, reply_markup=get_main_keyboard())
         
-        # ... остальные обработчики остаются без изменений ...
-        # (используйте ваш существующий код обработчиков)
-    
-    async def run_polling(self):
-        """Запуск polling с обработкой ошибок"""
-        global bot_running
+        @dp.message(lambda message: message.text == "📖 Правило")
+        async def show_rule(message: types.Message):
+            await message.answer(RULE_TEXT)
         
-        retry_count = 0
-        max_retries = 10
-        
-        while self.active and retry_count < max_retries:
-            try:
-                logger.info("🤖 Запуск polling Telegram бота...")
-                bot_running = True
-                
-                await self.dp.start_polling(
-                    self.bot,
-                    handle_signals=False,
-                    skip_updates=True,
-                    polling_timeout=30,
-                    allowed_updates=["message", "callback_query"]
-                )
-                
-            except Exception as e:
-                bot_running = False
-                retry_count += 1
-                
-                if "Flood control" in str(e):
-                    wait_time = min(60 * retry_count, 300)  # Максимум 5 минут
-                    logger.error(f"⚠️ Flood control, ждем {wait_time} секунд...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"❌ Ошибка в polling (попытка {retry_count}/{max_retries}): {e}")
-                    logger.error(traceback.format_exc())
-                    await asyncio.sleep(10 * retry_count)
+        @dp.message(lambda message: message.text == "📊 Статистика")
+        async def show_stats(message: types.Message):
+            user_id = str(message.from_user.id)
             
-        logger.error("❌ Достигнуто максимальное количество попыток, бот остановлен")
-        bot_running = False
-    
-    async def run(self):
-        """Основной запуск бота"""
-        if not self.initialize():
-            logger.error("❌ Не удалось инициализировать Telegram бота")
-            return
-        
-        # Запускаем автосохранение
-        asyncio.create_task(self._auto_save())
-        
-        # Запускаем polling
-        await self.run_polling()
-    
-    async def _auto_save(self):
-        """Автосохранение данных пользователей"""
-        while self.active:
-            await asyncio.sleep(300)
             with user_data_lock:
-                save_user_data(user_data)
-                logger.info("Данные пользователей автосохранены")
-    
-    def restart(self):
-        """Перезапуск бота"""
-        logger.info("🔄 Перезапуск Telegram бота...")
-        self.stop()
-        time.sleep(2)
-        self.active = True
-        self.run_in_thread()
-    
-    def stop(self):
-        """Остановка бота"""
-        logger.info("🛑 Остановка Telegram бота...")
-        self.active = False
-        if self.polling_task:
-            self.polling_task.cancel()
-        if self.session:
-            asyncio.run(self.session.close())
-    
-    def run_in_thread(self):
-        """Запуск бота в отдельном потоке"""
-        def run_async():
-            try:
-                asyncio.run(self.run())
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка в Telegram боте: {e}")
-                logger.error(traceback.format_exc())
-                global bot_running
-                bot_running = False
+                if user_id in user_data:
+                    data = user_data[user_id]
+                    total = data["total_tests"]
+                    correct = data["correct_answers"]
+                    
+                    if total > 0:
+                        accuracy = (correct / total) * 100
+                        stats_text = f"""
+*📊 Ваша статистика*
+
+👤 Имя: {data['user_name']}
+✅ Правильных ответов: {correct}
+❌ Неправильных ответов: {data['incorrect_answers']}
+📈 Всего тестов: {total}
+🎯 Точность: {accuracy:.1f}%
+🔄 Прогресс: {correct} из {len(EXAMPLES)} примеров освоено
+"""
+                    else:
+                        stats_text = "Вы ещё не прошли ни одного теста. Нажмите '🚀 Начать тест'!"
+                else:
+                    stats_text = "Статистика не найдена. Нажмите /start"
+            
+            await message.answer(stats_text)
         
-        thread = threading.Thread(target=run_async, daemon=True)
-        thread.start()
-        logger.info("✅ Telegram бот запущен в отдельном потоке")
-        return thread
+        @dp.message(lambda message: message.text == "💪 Работа над ошибками")
+        async def show_mistakes(message: types.Message):
+            user_id = str(message.from_user.id)
+            
+            with user_data_lock:
+                if user_id not in user_data or not user_data[user_id]["mistakes"]:
+                    await message.answer("🎉 У вас пока нет ошибок! Продолжайте в том же духе!")
+                    return
+                
+                mistakes = user_data[user_id]["mistakes"].copy()
+            
+            recent_mistakes = mistakes[-10:] if len(mistakes) > 10 else mistakes
+            
+            mistakes_text = "💪 *Работа над ошибками*\n\n"
+            mistakes_text += f"Всего ошибок: {len(mistakes)}\n\n"
+            
+            for i, example_idx in enumerate(recent_mistakes, 1):
+                example, correct_answer, explanation = EXAMPLES[example_idx]
+                
+                if correct_answer:
+                    parts = example.rsplit(" и ", 1)
+                    formatted_example = parts[0] + ", и " + parts[1] if len(parts) == 2 else example
+                else:
+                    formatted_example = example
+                
+                mistakes_text += f"{i}. `{formatted_example}`\n"
+                mistakes_text += f"   📝 *Объяснение:* {explanation}\n\n"
+            
+            builder = ReplyKeyboardBuilder()
+            builder.add(types.KeyboardButton(text="🧹 Очистить историю ошибок"))
+            builder.add(types.KeyboardButton(text="🔙 В меню"))
+            builder.adjust(2)
+            
+            await message.answer(mistakes_text, reply_markup=builder.as_markup(resize_keyboard=True))
+        
+        @dp.message(lambda message: message.text == "🧹 Очистить историю ошибок")
+        async def clear_mistakes(message: types.Message):
+            user_id = str(message.from_user.id)
+            
+            with user_data_lock:
+                if user_id in user_data:
+                    user_data[user_id]["mistakes"] = []
+                    save_user_data(user_data)
+                    await message.answer("✅ История ошибок очищена!", reply_markup=get_main_keyboard())
+                else:
+                    await message.answer("❌ Ошибка: данные пользователя не найдены", reply_markup=get_main_keyboard())
+        
+        @dp.message(lambda message: message.text == "🚀 Начать тест")
+        async def start_test(message: types.Message):
+            user_id = str(message.from_user.id)
+            
+            with user_data_lock:
+                if user_id not in user_data:
+                    await cmd_start(message)
+                    return
+            
+            example_index = random.randint(0, len(EXAMPLES) - 1)
+            
+            with user_data_lock:
+                user_data[user_id]["current_example"] = example_index
+                save_user_data(user_data)
+            
+            example_text, correct_answer, explanation = EXAMPLES[example_index]
+            
+            question_text = f"""
+*Пример {example_index + 1} из {len(EXAMPLES)}*
+
+`{example_text}`
+
+❓ *Вопрос:* Нужна ли запятой перед союзом *«и»* в этом предложении?
+"""
+            await message.answer(question_text, reply_markup=get_test_keyboard())
+        
+        @dp.message(lambda message: message.text in ["✅ Да, нужна", "❌ Нет, не нужна"])
+        async def check_answer(message: types.Message):
+            user_id = str(message.from_user.id)
+            
+            with user_data_lock:
+                if user_id not in user_data or "current_example" not in user_data[user_id]:
+                    await message.answer("❌ Сначала начните тест, нажав '🚀 Начать тест'", reply_markup=get_main_keyboard())
+                    return
+                
+                example_index = user_data[user_id]["current_example"]
+                del user_data[user_id]["current_example"]
+            
+            example_text, correct_answer, explanation = EXAMPLES[example_index]
+            user_answer = (message.text == "✅ Да, нужна")
+            
+            with user_data_lock:
+                user_data[user_id]["total_tests"] += 1
+                is_correct = (user_answer == correct_answer)
+                
+                if is_correct:
+                    user_data[user_id]["correct_answers"] += 1
+                else:
+                    user_data[user_id]["incorrect_answers"] += 1
+                    if example_index not in user_data[user_id]["mistakes"]:
+                        user_data[user_id]["mistakes"].append(example_index)
+                
+                total = user_data[user_id]["total_tests"]
+                correct = user_data[user_id]["correct_answers"]
+                user_data[user_id]["accuracy"] = (correct / total * 100) if total > 0 else 0
+                user_data[user_id]["last_active"] = datetime.now().isoformat()
+                save_user_data(user_data)
+            
+            if correct_answer:
+                parts = example_text.rsplit(" и ", 1)
+                formatted_example = parts[0] + ", и " + parts[1] if len(parts) == 2 else example_text
+            else:
+                formatted_example = example_text
+            
+            result_text = f"""
+{'✅ *ПРАВИЛЬНО!*' if is_correct else '❌ *НЕПРАВИЛЬНО*'}
+
+*Ваш ответ:* {"✅ Да, нужна" if user_answer else "❌ Нет, не нужна"}
+*Правильный ответ:* {"✅ Да, нужна" if correct_answer else "❌ Нет, не нужна"}
+
+*Правильный вариант:*
+`{formatted_example}`
+
+*Объяснение:*
+{explanation}
+
+*Ваша статистика:*
+Правильно: {user_data[user_id]["correct_answers"]} из {user_data[user_id]["total_tests"]}
+Точность: {user_data[user_id]["accuracy"]:.1f}%
+"""
+            await message.answer(result_text)
+            await asyncio.sleep(2)
+            
+            builder = ReplyKeyboardBuilder()
+            builder.add(types.KeyboardButton(text="➡️ Следующий вопрос"))
+            builder.add(types.KeyboardButton(text="📊 Статистика"))
+            builder.add(types.KeyboardButton(text="🔙 В меню"))
+            builder.adjust(2, 1)
+            
+            await message.answer("Хотите продолжить тренировку?", reply_markup=builder.as_markup(resize_keyboard=True))
+        
+        @dp.message(lambda message: message.text == "➡️ Следующий вопрос")
+        async def next_question(message: types.Message):
+            await start_test(message)
+        
+        @dp.message(lambda message: message.text == "🔙 В меню")
+        async def back_to_menu(message: types.Message):
+            user_id = str(message.from_user.id)
+            
+            with user_data_lock:
+                if user_id in user_data and "current_example" in user_data[user_id]:
+                    del user_data[user_id]["current_example"]
+                    save_user_data(user_data)
+            
+            await message.answer("Возвращаемся в главное меню...", reply_markup=get_main_keyboard())
+        
+        @dp.message()
+        async def unknown_message(message: types.Message):
+            await message.answer("Я не понимаю эту команду. Используйте меню ниже:", reply_markup=get_main_keyboard())
+        
+        # Автосохранение
+        async def auto_save():
+            while True:
+                await asyncio.sleep(300)
+                with user_data_lock:
+                    save_user_data(user_data)
+                    logger.info("Данные пользователей автосохранены")
+        
+        # Основная функция бота
+        async def main_bot():
+            logger.info("🤖 Запуск Telegram бота...")
+            
+            # Запускаем автосохранение
+            asyncio.create_task(auto_save())
+            
+            # Запускаем бота
+            await dp.start_polling(bot, handle_signals=False, skip_updates=True)
+        
+        # Запускаем asyncio в отдельном потоке
+        asyncio.run(main_bot())
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при запуске Telegram бота: {e}")
+        import traceback
+        traceback.print_exc()
 
 # --- ЗАПУСК ВЕБ-СЕРВЕРА ---
 def run_web_server():
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Запуск веб-сервера на порту {port}")
     
+    # Используем waitress для продакшена
     try:
         from waitress import serve
         serve(app, host='0.0.0.0', port=port, threads=4)
@@ -398,27 +463,18 @@ def main():
     print(f"🌐 Среда: {'RENDER.com' if os.getenv('RENDER') else 'Локальная'}")
     print("=" * 60)
     
-    # Глобальные переменные
-    global telegram_bot, bot_running, bot_last_check
-    telegram_bot = None
-    bot_running = False
-    bot_last_check = datetime.now()
-    
     # 1. Запускаем самопинг
     pinger = SelfPinger()
     pinger.start()
     logger.info("✅ Self-pinger запущен")
     
-    # 2. Создаем и запускаем Telegram бота
-    telegram_bot = TelegramBot()
-    bot_thread = telegram_bot.run_in_thread()
+    # 2. Запускаем Telegram бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    bot_thread.start()
+    logger.info("✅ Telegram бот запущен в отдельном потоке")
     
-    # 3. Запускаем монитор бота
-    monitor = BotMonitor(telegram_bot)
-    monitor.start()
-    
-    # 4. Запускаем веб-сервер
-    logger.info("✅ Запуск веб-сервера в основном потоке...")
+    # 3. Запускаем веб-сервер в основном потоке
+    logger.info("✅ Запуск веб-сервера...")
     run_web_server()
 
 if __name__ == "__main__":
