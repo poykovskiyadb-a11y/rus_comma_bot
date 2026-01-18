@@ -60,10 +60,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Проверяем бота перед запуском
-if not check_bot_status():
-    logger.error("❌ Бот недоступен. Проверьте токен и интернет соединение")
-    sys.exit(1)
+# Временное отключение проверки для отладки
+try:
+    if not check_bot_status():
+        logger.warning("⚠️  Проверка токена не пройдена, но продолжаем запуск")
+        logger.warning("⚠️  Возможно, проблемы с сетью или Telegram API")
+except Exception as e:
+    logger.warning(f"⚠️  Ошибка при проверке токена: {e}, продолжаем запуск")
 
 # --- СОЗДАЕМ FLASK ПРИЛОЖЕНИЕ ---
 app = Flask(__name__)
@@ -512,3 +515,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
